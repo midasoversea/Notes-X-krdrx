@@ -224,7 +224,12 @@ private fun VaultScreen(data: VaultData, dark: Boolean, onTheme: (Boolean) -> Un
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { columnDialog = true }) { Icon(Icons.Default.Add, null); Text("Kolom") }
-            OutlinedButton(onClick = { onSave(data.copy(rows = (data.rows + mutableListOf<String>().apply { repeat(data.columns.size) { add("") } }).toMutableList())) }) {
+            OutlinedButton(onClick = {
+                val newRow: MutableList<String> = MutableList(data.columns.size) { "" }
+                val updatedRows: MutableList<MutableList<String>> =
+                    data.rows.map { it.toMutableList() }.toMutableList().also { it.add(newRow) }
+                onSave(data.copy(rows = updatedRows))
+            }) {
                 Icon(Icons.Default.Add, null); Text("Baris")
             }
         }
