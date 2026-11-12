@@ -205,7 +205,7 @@ private fun VaultScreen(data: VaultData, dark: Boolean, onTheme: (Boolean) -> Un
     var showSettings by remember { mutableStateOf(false) }
     var edit by remember { mutableStateOf<Triple<Int, Int, String>?>(null) }
     var columnDialog by remember { mutableStateOf(false) }
-    var newColumn by remember { mutableStateOf("") }
+    var newColumn by remember { mutableStateOf("") }\n    var renameColumn by remember { mutableStateOf<Int?>(null) }\n    var renamedTitle by remember { mutableStateOf("") }
     val context = LocalContext.current
 
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(12.dp)) {
@@ -231,7 +231,7 @@ private fun VaultScreen(data: VaultData, dark: Boolean, onTheme: (Boolean) -> Un
             data.columns.forEachIndexed { col, title ->
                 Surface(color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.width(150.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(6.dp)) {
-                        Text(title, modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1)
+                        TextButton(onClick = { renameColumn = col; renamedTitle = title }, modifier = Modifier.weight(1f)) { Text(title, fontWeight = FontWeight.Bold, maxLines = 1) }
                         IconButton(onClick = { onSave(data.copy(columns = data.columns.toMutableList().also { it.removeAt(col) },
                             rows = data.rows.map { it.toMutableList().also { row -> if (col < row.size) row.removeAt(col) } }.toMutableList())) },
                             modifier = Modifier.size(28.dp)) { Icon(Icons.Default.Delete, null, modifier = Modifier.size(16.dp)) }
@@ -241,7 +241,7 @@ private fun VaultScreen(data: VaultData, dark: Boolean, onTheme: (Boolean) -> Un
         }
         HorizontalDivider()
         LazyColumn(Modifier.weight(1f)) {
-            itemsIndexed(data.rows.filter { row -> query.isBlank() || row.any { it.contains(query, true) } }) { rowIndex, row ->
+            itemsIndexed(data.rows.mapIndexed { index, row -> index to row }.filter { (_, row) -> query.isBlank() || row.any { it.contains(query, true) } }) { _, indexedRow ->\n                val rowIndex = indexedRow.first\n                val row = indexedRow.second
                 Row(Modifier.horizontalScroll(rememberScrollState())) {
                     row.forEachIndexed { colIndex, value ->
                         val isPassword = data.columns.getOrNull(colIndex)?.contains("password", true) == true ||
