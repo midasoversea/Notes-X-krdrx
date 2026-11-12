@@ -69,7 +69,7 @@ private class VaultCrypto(private val context: Context) {
     fun exists() = file.exists()
 
     private fun key(pin: String, salt: ByteArray): SecretKeySpec {
-        val spec = PBEKeySpec(pin.toCharArray(), salt, 210_000, 256)
+        val spec = PBEKeySpec(pin.toCharArray(), salt, 600_000, 256)
         val bytes = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
         spec.clearPassword()
         return SecretKeySpec(bytes, "AES")
@@ -183,14 +183,14 @@ private fun LockScreen(
         Icon(Icons.Default.Lock, null, tint = Tosca, modifier = Modifier.size(54.dp))
         Spacer(Modifier.height(16.dp))
         Text("Notes-X-krdrx", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Text(if (setup) "Buat PIN utama (minimal 6 digit)" else "Masukkan PIN untuk membuka vault")
+        Text(if (setup) "Buat kata sandi utama (minimal 10 karakter)" else "Masukkan kata sandi untuk membuka vault")
         Spacer(Modifier.height(24.dp))
-        OutlinedTextField(pin, onPin, label = { Text("PIN") }, singleLine = true,
-            visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword))
+        OutlinedTextField(pin, onPin, label = { Text("Kata sandi utama") }, singleLine = true,
+            visualTransformation = PasswordVisualTransformation())
         if (setup) {
             Spacer(Modifier.height(10.dp))
-            OutlinedTextField(confirm, onConfirm, label = { Text("Ulangi PIN") }, singleLine = true,
-                visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword))
+            OutlinedTextField(confirm, onConfirm, label = { Text("Ulangi kata sandi") }, singleLine = true,
+                visualTransformation = PasswordVisualTransformation(), )
         }
         if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(8.dp))
         Spacer(Modifier.height(18.dp))
