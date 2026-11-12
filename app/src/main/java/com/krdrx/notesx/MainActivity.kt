@@ -410,11 +410,37 @@ private fun VaultHomeScreen(
                     )
                 }
             }
-            IconButton(onClick = { grid = !grid; onStoreChange(store.copy(gridMode = grid)) }) {
-                Icon(if (grid) Icons.Default.ViewAgenda else Icons.Default.GridView,
-                    contentDescription = "Ganti tampilan")
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = MaterialTheme.colorScheme.primaryContainer,
+                modifier = Modifier.size(42.dp).clickable {
+                    grid = !grid
+                    onStoreChange(store.copy(gridMode = grid))
+                }
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        if (grid) Icons.Default.ViewAgenda else Icons.Default.GridView,
+                        contentDescription = "Ganti tampilan",
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(23.dp)
+                    )
+                }
             }
-            IconButton(onClick = onLock) { Icon(Icons.Default.Lock, "Kunci") }
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = MaterialTheme.colorScheme.primaryContainer,
+                modifier = Modifier.size(42.dp).clickable(onClick = onLock)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.Default.Lock,
+                        contentDescription = "Kunci",
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(21.dp)
+                    )
+                }
+            }
         }
         OutlinedTextField(search, { search = it }, modifier = Modifier.fillMaxWidth(),
             placeholder = { Text("Cari judul, label, atau isi...") }, singleLine = true)
