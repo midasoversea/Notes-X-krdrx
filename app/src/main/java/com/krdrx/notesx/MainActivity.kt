@@ -205,7 +205,9 @@ private fun VaultScreen(data: VaultData, dark: Boolean, onTheme: (Boolean) -> Un
     var showSettings by remember { mutableStateOf(false) }
     var edit by remember { mutableStateOf<Triple<Int, Int, String>?>(null) }
     var columnDialog by remember { mutableStateOf(false) }
-    var newColumn by remember { mutableStateOf("") }\n    var renameColumn by remember { mutableStateOf<Int?>(null) }\n    var renamedTitle by remember { mutableStateOf("") }
+    var newColumn by remember { mutableStateOf("") }
+    var renameColumn by remember { mutableStateOf<Int?>(null) }
+    var renamedTitle by remember { mutableStateOf("") }
     val context = LocalContext.current
 
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(12.dp)) {
@@ -241,7 +243,9 @@ private fun VaultScreen(data: VaultData, dark: Boolean, onTheme: (Boolean) -> Un
         }
         HorizontalDivider()
         LazyColumn(Modifier.weight(1f)) {
-            itemsIndexed(data.rows.mapIndexed { index, row -> index to row }.filter { (_, row) -> query.isBlank() || row.any { it.contains(query, true) } }) { _, indexedRow ->\n                val rowIndex = indexedRow.first\n                val row = indexedRow.second
+            itemsIndexed(data.rows.mapIndexed { index, row -> index to row }.filter { (_, row) -> query.isBlank() || row.any { it.contains(query, true) } }) { _, indexedRow ->
+                val rowIndex = indexedRow.first
+                val row = indexedRow.second
                 Row(Modifier.horizontalScroll(rememberScrollState())) {
                     row.forEachIndexed { colIndex, value ->
                         val isPassword = data.columns.getOrNull(colIndex)?.contains("password", true) == true ||
