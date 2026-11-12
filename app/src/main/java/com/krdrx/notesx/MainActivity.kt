@@ -134,6 +134,9 @@ private data class VaultStore(
 
 private class VaultCrypto(private val context: Context) {
     private val file = File(context.filesDir, "vault.enc")
+    @Volatile private var cachedPin: String? = null
+    @Volatile private var cachedKey: SecretKeySpec? = null
+    @Volatile private var cachedSalt: ByteArray? = null
     fun exists() = file.exists()
 
     private fun key(pin: String, salt: ByteArray): SecretKeySpec {
@@ -143,14 +146,37 @@ private class VaultCrypto(private val context: Context) {
         return SecretKeySpec(bytes, "AES")
     }
 
+    @Synchronized private fun keyForSave(pin: String): Pair<ByteArray, SecretKeySpec> {
+        val currentSalt = cachedSalt
+        val currentKey = cachedKey
+        if (cachedPin == pin && currentSalt != null && currentKey != null) return currentSalt to currentKey
+        val salt = if (file.exists() && file.length() > 17) file.readBytes().copyOfRange(1, 17)
+            else ByteArray(16).also(SecureRandom()::nextBytes)
+        val derived = key(pin, salt)
+        cachedPin = pin
+        cachedSalt = salt
+        cachedKey = derived
+        return salt to derived
+    }
+
+    @Synchronized fun clearKey() {
+        cachedPin = null
+        cachedKey = null
+        cachedSalt = null
+    }
+
     fun save(pin: String, data: VaultStore) {
-        val random = SecureRandom()
-        val salt = ByteArray(16).also(random::nextBytes)
-        val iv = ByteArray(12).also(random::nextBytes)
+        val (salt, secretKey) = keyForSave(pin)
+        val iv = ByteArray(12).also(SecureRandom()::nextBytes)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, key(pin, salt), GCMParameterSpec(128, iv))
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey, GCMParameterSpec(128, iv))
         val encrypted = cipher.doFinal(data.json().toByteArray(Charsets.UTF_8))
-        file.writeBytes(byteArrayOf(1) + salt + iv + encrypted)
+        val temp = File(context.filesDir, "vault.enc.tmp")
+        temp.writeBytes(byteArrayOf(1) + salt + iv + encrypted)
+        if (!temp.renameTo(file)) {
+            file.writeBytes(temp.readBytes())
+            temp.delete()
+        }
     }
 
     fun load(pin: String): VaultStore {
@@ -159,9 +185,14 @@ private class VaultCrypto(private val context: Context) {
         val salt = bytes.copyOfRange(1, 17)
         val iv = bytes.copyOfRange(17, 29)
         val encrypted = bytes.copyOfRange(29, bytes.size)
+        val secretKey = key(pin, salt)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, key(pin, salt), GCMParameterSpec(128, iv))
-        return VaultStore.parse(String(cipher.doFinal(encrypted), Charsets.UTF_8))
+        cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(128, iv))
+        val loaded = VaultStore.parse(String(cipher.doFinal(encrypted), Charsets.UTF_8))
+        cachedPin = pin
+        cachedSalt = salt
+        cachedKey = secretKey
+        return loaded
     }
 }
 
@@ -264,9 +295,9 @@ private fun NotesXApp() {
                 onLock = {
                     unlocked = false
                     pin = ""
+                    crypto.clearKey()
                 }
             )
-            BackHandler { unlocked = false; pin = "" }
         }
     }
 }
@@ -322,6 +353,15 @@ private fun VaultHomeScreen(
     var showMeta by remember { mutableStateOf<NoteCard?>(null) }
     var search by remember { mutableStateOf("") }
 
+    BackHandler {
+        when {
+            showMeta != null -> showMeta = null
+            creating -> creating = false
+            activeId != null -> activeId = null
+            else -> onLock()
+        }
+    }
+
     val active = store.notes.firstOrNull { it.id == activeId }
     if (active != null) {
         SpreadsheetScreen(
@@ -354,9 +394,21 @@ private fun VaultHomeScreen(
                     fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
                 Text("${store.notes.size} catatan", style = MaterialTheme.typography.labelSmall)
             }
-            IconButton(onClick = { onStoreChange(store.copy(darkTheme = !store.darkTheme)) }) {
-                Icon(if (store.darkTheme) Icons.Default.WbSunny else Icons.Default.DarkMode,
-                    contentDescription = "Ganti tema")
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = MaterialTheme.colorScheme.primaryContainer,
+                modifier = Modifier.size(42.dp).clickable {
+                    onStoreChange(store.copy(darkTheme = !store.darkTheme))
+                }
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        if (store.darkTheme) Icons.Default.WbSunny else Icons.Default.DarkMode,
+                        contentDescription = "Ganti tema",
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(23.dp)
+                    )
+                }
             }
             IconButton(onClick = { grid = !grid; onStoreChange(store.copy(gridMode = grid)) }) {
                 Icon(if (grid) Icons.Default.ViewAgenda else Icons.Default.GridView,
@@ -472,8 +524,6 @@ private fun NoteCardView(
             }
             if (note.label.isNotBlank()) Text(note.label, style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary)
-            Text("${note.data.columns.size} kolom • ${note.data.rows.size} baris",
-                style = MaterialTheme.typography.labelSmall)
             note.data.rows.take(3).forEach { row ->
                 Text(row.filter { it.isNotBlank() }.joinToString("  •  ").take(90),
                     style = MaterialTheme.typography.bodySmall, maxLines = 1)
