@@ -287,6 +287,20 @@ private fun VaultScreen(data: VaultData, dark: Boolean, onTheme: (Boolean) -> Un
             }) { Text("Simpan") } },
             dismissButton = { TextButton(onClick = { edit = null }) { Text("Batal") } })
     }
+    if (renameColumn != null) {
+        val index = renameColumn!!
+        AlertDialog(onDismissRequest = { renameColumn = null }, title = { Text("Ubah nama kolom") },
+            text = { OutlinedTextField(renamedTitle, { renamedTitle = it }, label = { Text("Nama kolom") }) },
+            confirmButton = { TextButton(onClick = {
+                if (renamedTitle.isNotBlank() && index in data.columns.indices) {
+                    val cols = data.columns.toMutableList()
+                    cols[index] = renamedTitle.trim()
+                    onSave(data.copy(columns = cols))
+                }
+                renameColumn = null
+            }) { Text("Simpan") } },
+            dismissButton = { TextButton(onClick = { renameColumn = null }) { Text("Batal") } })
+    }
     if (columnDialog) {
         AlertDialog(onDismissRequest = { columnDialog = false }, title = { Text("Tambah kolom") },
             text = { OutlinedTextField(newColumn, { newColumn = it }, label = { Text("Nama kolom") }) },
