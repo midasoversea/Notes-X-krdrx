@@ -131,8 +131,8 @@ private fun NotesXApp() {
         if (!unlocked) {
             LockScreen(isSetup, pin, { pin = it }, pinConfirm, { pinConfirm = it }, error, dark) {
                 if (isSetup) {
-                    if (pin.length < 6 || pin != pinConfirm) {
-                        error = "PIN minimal 6 digit dan konfirmasi harus sama."
+                    if (pin.length < 10 || pin != pinConfirm) {
+                        error = "Kata sandi minimal 10 karakter dan konfirmasi harus sama."
                     } else {
                         data = VaultData.empty()
                         crypto.save(pin, data)
