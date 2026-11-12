@@ -24,6 +24,11 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -120,6 +125,9 @@ private fun NotesXApp() {
     var pinConfirm by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
     var isSetup by remember { mutableStateOf(!crypto.exists()) }
+    var busy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val saveMutex = remember { Mutex() }
 
     val bg = if (dark) DarkBg else LightBg
     val surface = if (dark) Color(0xFF193B36) else Color.White
@@ -129,24 +137,36 @@ private fun NotesXApp() {
 
     MaterialTheme(colorScheme = scheme) {
         if (!unlocked) {
-            LockScreen(isSetup, pin, { pin = it }, pinConfirm, { pinConfirm = it }, error, dark) {
-                if (isSetup) {
-                    if (pin.length < 10 || pin != pinConfirm) {
+            LockScreen(isSetup, pin, { pin = it }, pinConfirm, { pinConfirm = it }, error, dark, busy) {
+                if (!busy) {
+                    if (isSetup && (pin.length < 10 || pin != pinConfirm)) {
                         error = "Kata sandi minimal 10 karakter dan konfirmasi harus sama."
+                    } else if (pin.isBlank()) {
+                        error = "Masukkan kata sandi terlebih dahulu."
                     } else {
-                        data = VaultData.empty()
-                        crypto.save(pin, data)
-                        unlocked = true
+                        busy = true
                         error = ""
-                    }
-                } else {
-                    try {
-                        data = crypto.load(pin)
-                        unlocked = true
-                        error = ""
-                    } catch (_: Exception) {
-                        error = "PIN salah atau data vault rusak."
-                        pin = ""
+                        val password = pin
+                        scope.launch {
+                            try {
+                                val loaded = withContext(Dispatchers.IO) {
+                                    if (isSetup) {
+                                        val fresh = VaultData.empty()
+                                        crypto.save(password, fresh)
+                                        fresh
+                                    } else {
+                                        crypto.load(password)
+                                    }
+                                }
+                                data = loaded
+                                unlocked = true
+                            } catch (_: Exception) {
+                                error = if (isSetup) "Gagal membuat vault. Coba lagi." else "Kata sandi salah atau data vault rusak."
+                                if (!isSetup) pin = ""
+                            } finally {
+                                busy = false
+                            }
+                        }
                     }
                 }
             }
@@ -157,7 +177,16 @@ private fun NotesXApp() {
             }
             VaultScreen(data, dark, { dark = it }, { updated ->
                 data = updated
-                crypto.save(pin, data)
+                val password = pin
+                val snapshot = VaultData(
+                    updated.columns.toMutableList(),
+                    updated.rows.map { it.toMutableList() }.toMutableList()
+                )
+                scope.launch {
+                    saveMutex.withLock {
+                        withContext(Dispatchers.IO) { crypto.save(password, snapshot) }
+                    }
+                }
             }, {
                 unlocked = false
                 pin = ""
@@ -176,7 +205,8 @@ private fun windowSecure(context: Context, enabled: Boolean) {
 @Composable
 private fun LockScreen(
     setup: Boolean, pin: String, onPin: (String) -> Unit,
-    confirm: String, onConfirm: (String) -> Unit, error: String, dark: Boolean, submit: () -> Unit
+    confirm: String, onConfirm: (String) -> Unit, error: String, dark: Boolean,
+    busy: Boolean, submit: () -> Unit
 ) {
     Column(Modifier.fillMaxSize().background(if (dark) DarkBg else LightBg).padding(28.dp),
         verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
@@ -193,8 +223,15 @@ private fun LockScreen(
                 visualTransformation = PasswordVisualTransformation(), )
         }
         if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(8.dp))
+        if (busy) {
+            Spacer(Modifier.height(12.dp))
+            CircularProgressIndicator()
+            Text("Memproses enkripsi, tunggu sebentar...")
+        }
         Spacer(Modifier.height(18.dp))
-        Button(onClick = submit, modifier = Modifier.fillMaxWidth()) { Text(if (setup) "Buat Vault" else "Buka") }
+        Button(onClick = submit, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+            Text(if (busy) "Memproses..." else if (setup) "Buat Vault" else "Buka")
+        }
     }
 }
 
