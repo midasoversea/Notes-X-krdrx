@@ -24,6 +24,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import kotlinx.coroutines.Dispatchers
@@ -337,13 +339,25 @@ private fun VaultScreen(data: VaultData, dark: Boolean, onTheme: (Boolean) -> Un
                             modifier = Modifier.width(cellWidth).height(42.dp)
                                 .clickable { edit = Triple(rowIndex, colIndex, value) }
                         ) {
-                            Box(Modifier.fillMaxSize().padding(horizontal = 7.dp, vertical = 4.dp),
-                                contentAlignment = Alignment.CenterStart) {
+                            Row(
+                                Modifier.fillMaxSize().padding(start = 7.dp, end = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 Text(
                                     if (isPassword && !reveal && value.isNotEmpty()) "••••••••" else value,
+                                    modifier = Modifier.weight(1f),
                                     maxLines = 1, style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
+                                if (isPassword && value.isNotEmpty()) {
+                                    IconButton(onClick = { reveal = !reveal }, modifier = Modifier.size(26.dp)) {
+                                        Icon(
+                                            if (reveal) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                            contentDescription = if (reveal) "Sembunyikan" else "Lihat",
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
