@@ -9,6 +9,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -32,6 +34,7 @@ import kotlinx.coroutines.sync.withLock
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -132,8 +135,17 @@ private fun NotesXApp() {
     val bg = if (dark) DarkBg else LightBg
     val surface = if (dark) Color(0xFF193B36) else Color.White
     val text = if (dark) Color(0xFFE7F4F1) else Color(0xFF173B35)
-    val scheme = if (dark) darkColorScheme(primary = Color(0xFF54D6C5), background = bg, surface = surface, onSurface = text)
-                 else lightColorScheme(primary = Tosca, background = bg, surface = surface, onSurface = text)
+    val scheme = if (dark) darkColorScheme(
+        primary = Color(0xFF54D6C5), background = bg, surface = surface,
+        onSurface = text, onBackground = text,
+        primaryContainer = Color(0xFF24534C), onPrimaryContainer = Color(0xFFE7F4F1),
+        outlineVariant = Color(0xFF52716C)
+    ) else lightColorScheme(
+        primary = Tosca, background = bg, surface = surface,
+        onSurface = text, onBackground = text,
+        primaryContainer = Color(0xFFD7F0EB), onPrimaryContainer = Color(0xFF173B35),
+        outlineVariant = Color(0xFFB7C9C4)
+    )
 
     MaterialTheme(colorScheme = scheme) {
         if (!unlocked) {
@@ -250,7 +262,8 @@ private fun VaultScreen(data: VaultData, dark: Boolean, onTheme: (Boolean) -> Un
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.weight(1f)) {
-                Text("Notes-X-krdrx", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("Notes-X-krdrx", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground)
                 Text("Vault lokal terenkripsi", style = MaterialTheme.typography.labelSmall)
             }
             IconButton(onClick = { showSettings = true }) { Icon(Icons.Default.Settings, "Pengaturan") }
@@ -271,51 +284,79 @@ private fun VaultScreen(data: VaultData, dark: Boolean, onTheme: (Boolean) -> Un
             }
         }
         Spacer(Modifier.height(8.dp))
-        Row(Modifier.horizontalScroll(rememberScrollState()).fillMaxWidth()) {
+        val cellWidth = 132.dp
+        val gridLine = MaterialTheme.colorScheme.outlineVariant
+        Row(Modifier.horizontalScroll(rememberScrollState())) {
             data.columns.forEachIndexed { col, title ->
-                Surface(color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.width(150.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(6.dp)) {
-                        TextButton(onClick = { renameColumn = col; renamedTitle = title }, modifier = Modifier.weight(1f)) { Text(title, fontWeight = FontWeight.Bold, maxLines = 1) }
-                        IconButton(onClick = { onSave(data.copy(columns = data.columns.toMutableList().also { it.removeAt(col) },
-                            rows = data.rows.map { it.toMutableList().also { row -> if (col < row.size) row.removeAt(col) } }.toMutableList())) },
-                            modifier = Modifier.size(28.dp)) { Icon(Icons.Default.Delete, null, modifier = Modifier.size(16.dp)) }
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    border = BorderStroke(0.7.dp, gridLine),
+                    modifier = Modifier.width(cellWidth).height(40.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 6.dp, end = 2.dp)) {
+                        TextButton(
+                            onClick = { renameColumn = col; renamedTitle = title },
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                            contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp)
+                        ) {
+                            Text(title, fontWeight = FontWeight.SemiBold, maxLines = 1,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer)
+                        }
+                        IconButton(
+                            onClick = {
+                                onSave(data.copy(
+                                    columns = data.columns.toMutableList().also { it.removeAt(col) },
+                                    rows = data.rows.map { it.toMutableList().also { row -> if (col < row.size) row.removeAt(col) } }.toMutableList()
+                                ))
+                            },
+                            modifier = Modifier.size(26.dp)
+                        ) { Icon(Icons.Default.Delete, "Hapus kolom", modifier = Modifier.size(14.dp)) }
                     }
                 }
             }
+            Surface(
+                color = MaterialTheme.colorScheme.primaryContainer,
+                border = BorderStroke(0.7.dp, gridLine),
+                modifier = Modifier.width(38.dp).height(40.dp)
+            ) { Box(contentAlignment = Alignment.Center) { Text("#", color = MaterialTheme.colorScheme.onPrimaryContainer) } }
         }
-        HorizontalDivider()
         LazyColumn(Modifier.weight(1f)) {
-            itemsIndexed(data.rows.mapIndexed { index, row -> index to row }.filter { (_, row) -> query.isBlank() || row.any { it.contains(query, true) } }) { _, indexedRow ->
+            itemsIndexed(data.rows.mapIndexed { index, row -> index to row }
+                .filter { (_, row) -> query.isBlank() || row.any { it.contains(query, true) } }) { _, indexedRow ->
                 val rowIndex = indexedRow.first
                 val row = indexedRow.second
                 Row(Modifier.horizontalScroll(rememberScrollState())) {
                     row.forEachIndexed { colIndex, value ->
-                        val isPassword = data.columns.getOrNull(colIndex)?.contains("password", true) == true ||
-                            data.columns.getOrNull(colIndex)?.contains("sandi", true) == true
+                        val isPassword = data.columns.getOrNull(colIndex)?.let {
+                            it.contains("password", true) || it.contains("sandi", true)
+                        } == true
                         var reveal by remember(value, rowIndex, colIndex) { mutableStateOf(false) }
-                        Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.width(150.dp).padding(1.dp),
-                            shape = RoundedCornerShape(4.dp)) {
-                            Column(Modifier.padding(8.dp)) {
-                                Text(data.columns.getOrNull(colIndex) ?: "", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                                Text(if (isPassword && !reveal && value.isNotEmpty()) "••••••••" else value,
-                                    maxLines = 2, style = MaterialTheme.typography.bodyMedium)
-                                Row {
-                                    TextButton(onClick = { edit = Triple(rowIndex, colIndex, value) }) { Text("Edit") }
-                                    if (isPassword) TextButton(onClick = { reveal = !reveal }) { Text(if (reveal) "Sembunyi" else "Lihat") }
-                                    TextButton(onClick = {
-                                        val clip = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                        clip.setPrimaryClip(ClipData.newPlainText("vault", value))
-                                        android.os.Handler(context.mainLooper).postDelayed({
-                                            if (clip.hasPrimaryClip()) clip.setPrimaryClip(ClipData.newPlainText("", ""))
-                                        }, 30_000)
-                                    }) { Text("Salin") }
-                                }
+                        Surface(
+                            color = MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(0.7.dp, gridLine),
+                            modifier = Modifier.width(cellWidth).height(42.dp)
+                                .clickable { edit = Triple(rowIndex, colIndex, value) }
+                        ) {
+                            Box(Modifier.fillMaxSize().padding(horizontal = 7.dp, vertical = 4.dp),
+                                contentAlignment = Alignment.CenterStart) {
+                                Text(
+                                    if (isPassword && !reveal && value.isNotEmpty()) "••••••••" else value,
+                                    maxLines = 1, style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
                             }
                         }
                     }
-                    IconButton(onClick = {
-                        onSave(data.copy(rows = data.rows.toMutableList().also { it.removeAt(rowIndex) }))
-                    }) { Icon(Icons.Default.Delete, "Hapus baris") }
+                    Surface(
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(0.7.dp, gridLine),
+                        modifier = Modifier.width(38.dp).height(42.dp)
+                    ) {
+                        IconButton(
+                            onClick = { onSave(data.copy(rows = data.rows.toMutableList().also { it.removeAt(rowIndex) })) },
+                            modifier = Modifier.fillMaxSize()
+                        ) { Icon(Icons.Default.Delete, "Hapus baris", modifier = Modifier.size(16.dp)) }
+                    }
                 }
             }
         }
