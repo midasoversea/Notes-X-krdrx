@@ -26,6 +26,13 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.WbSunny
+import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.ViewAgenda
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.NoteAdd
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import kotlinx.coroutines.Dispatchers
@@ -74,6 +81,57 @@ private data class VaultData(val columns: MutableList<String>, val rows: Mutable
     }
 }
 
+private data class NoteCard(
+    val id: String,
+    val title: String,
+    val data: VaultData,
+    val label: String = "",
+    val color: Int = 0,
+    val pinned: Boolean = false,
+    val updated: Long = System.currentTimeMillis()
+)
+
+private data class VaultStore(
+    val notes: MutableList<NoteCard>,
+    val darkTheme: Boolean = false,
+    val gridMode: Boolean = true
+) {
+    fun json(): String = JSONObject().put("version", 2).put("darkTheme", darkTheme)
+        .put("gridMode", gridMode).put("notes", JSONArray().also { array ->
+            notes.forEach { note ->
+                array.put(JSONObject().put("id", note.id).put("title", note.title)
+                    .put("data", JSONObject(note.data.json())).put("label", note.label)
+                    .put("color", note.color).put("pinned", note.pinned).put("updated", note.updated))
+            }
+        }).toString()
+
+    companion object {
+        fun parse(raw: String): VaultStore {
+            val root = JSONObject(raw)
+            if (root.has("notes")) {
+                val array = root.getJSONArray("notes")
+                val notes = MutableList(array.length()) { i ->
+                    val item = array.getJSONObject(i)
+                    NoteCard(
+                        item.optString("id", java.util.UUID.randomUUID().toString()),
+                        item.optString("title", "Tanpa judul"),
+                        VaultData.parse(item.getJSONObject("data").toString()),
+                        item.optString("label", ""), item.optInt("color", 0),
+                        item.optBoolean("pinned", false), item.optLong("updated", System.currentTimeMillis())
+                    )
+                }
+                return VaultStore(notes, root.optBoolean("darkTheme", false), root.optBoolean("gridMode", true))
+            }
+            // Migrasi otomatis format lama: satu spreadsheet menjadi kartu pertama.
+            val legacy = VaultData.parse(raw)
+            return VaultStore(mutableListOf(NoteCard(
+                java.util.UUID.randomUUID().toString(), "Catatan Utama", legacy
+            )))
+        }
+        fun empty() = VaultStore(mutableListOf())
+    }
+}
+
 private class VaultCrypto(private val context: Context) {
     private val file = File(context.filesDir, "vault.enc")
     fun exists() = file.exists()
@@ -85,7 +143,7 @@ private class VaultCrypto(private val context: Context) {
         return SecretKeySpec(bytes, "AES")
     }
 
-    fun save(pin: String, data: VaultData) {
+    fun save(pin: String, data: VaultStore) {
         val random = SecureRandom()
         val salt = ByteArray(16).also(random::nextBytes)
         val iv = ByteArray(12).also(random::nextBytes)
@@ -95,7 +153,7 @@ private class VaultCrypto(private val context: Context) {
         file.writeBytes(byteArrayOf(1) + salt + iv + encrypted)
     }
 
-    fun load(pin: String): VaultData {
+    fun load(pin: String): VaultStore {
         val bytes = file.readBytes()
         require(bytes.size > 29 && bytes[0].toInt() == 1) { "Format vault tidak valid." }
         val salt = bytes.copyOfRange(1, 17)
@@ -103,7 +161,7 @@ private class VaultCrypto(private val context: Context) {
         val encrypted = bytes.copyOfRange(29, bytes.size)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, key(pin, salt), GCMParameterSpec(128, iv))
-        return VaultData.parse(String(cipher.doFinal(encrypted), Charsets.UTF_8))
+        return VaultStore.parse(String(cipher.doFinal(encrypted), Charsets.UTF_8))
     }
 }
 
@@ -125,7 +183,7 @@ private fun NotesXApp() {
     val crypto = remember { VaultCrypto(context) }
     var dark by remember { mutableStateOf(false) }
     var unlocked by remember { mutableStateOf(false) }
-    var data by remember { mutableStateOf(VaultData.empty()) }
+    var data by remember { mutableStateOf(VaultStore.empty()) }
     var pin by remember { mutableStateOf("") }
     var pinConfirm by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
@@ -165,7 +223,7 @@ private fun NotesXApp() {
                             try {
                                 val loaded = withContext(Dispatchers.IO) {
                                     if (isSetup) {
-                                        val fresh = VaultData.empty()
+                                        val fresh = VaultStore.empty()
                                         crypto.save(password, fresh)
                                         fresh
                                     } else {
@@ -173,6 +231,7 @@ private fun NotesXApp() {
                                     }
                                 }
                                 data = loaded
+                                dark = loaded.darkTheme
                                 unlocked = true
                             } catch (_: Exception) {
                                 error = if (isSetup) "Gagal membuat vault. Coba lagi." else "Kata sandi salah atau data vault rusak."
@@ -189,22 +248,23 @@ private fun NotesXApp() {
                 windowSecure(context, true)
                 onDispose { windowSecure(context, false) }
             }
-            VaultScreen(data, dark, { dark = it }, { updated ->
-                data = updated
-                val password = pin
-                val snapshot = VaultData(
-                    updated.columns.toMutableList(),
-                    updated.rows.map { it.toMutableList() }.toMutableList()
-                )
-                scope.launch {
-                    saveMutex.withLock {
-                        withContext(Dispatchers.IO) { crypto.save(password, snapshot) }
+            VaultHomeScreen(
+                store = data.copy(darkTheme = dark),
+                onStoreChange = { updated ->
+                    data = updated
+                    dark = updated.darkTheme
+                    val password = pin
+                    val snapshot = updated.copy(notes = updated.notes.map { note ->
+                        note.copy(data = VaultData(note.data.columns.toMutableList(), note.data.rows.map { it.toMutableList() }.toMutableList()))
+                    }.toMutableList())
+                    scope.launch {
+                        saveMutex.withLock { withContext(Dispatchers.IO) { crypto.save(password, snapshot) } }
                     }
-                }
-            }, {
+                },
+                onLock = {
                 unlocked = false
                 pin = ""
-            })
+            )
             BackHandler { unlocked = false; pin = "" }
         }
     }
@@ -250,132 +310,294 @@ private fun LockScreen(
 }
 
 @Composable
-private fun VaultScreen(data: VaultData, dark: Boolean, onTheme: (Boolean) -> Unit,
-                        onSave: (VaultData) -> Unit, onLock: () -> Unit) {
+private fun VaultHomeScreen(
+    store: VaultStore,
+    onStoreChange: (VaultStore) -> Unit,
+    onLock: () -> Unit
+) {
+    var activeId by remember { mutableStateOf<String?>(null) }
+    var creating by remember { mutableStateOf(false) }
+    var grid by remember(store.gridMode) { mutableStateOf(store.gridMode) }
+    var showMeta by remember { mutableStateOf<NoteCard?>(null) }
+    var search by remember { mutableStateOf("") }
+
+    val active = store.notes.firstOrNull { it.id == activeId }
+    if (active != null) {
+        SpreadsheetScreen(
+            note = active,
+            onBack = { activeId = null },
+            onChange = { changed ->
+                onStoreChange(store.copy(notes = store.notes.map { if (it.id == changed.id) changed else it }.toMutableList()))
+            }
+        )
+        return
+    }
+
+    if (creating) {
+        NewNoteScreen(
+            onCancel = { creating = false },
+            onCreate = { title, label, color ->
+                val note = NoteCard(java.util.UUID.randomUUID().toString(), title, VaultData.empty(), label, color)
+                onStoreChange(store.copy(notes = (store.notes + note).toMutableList()))
+                creating = false
+                activeId = note.id
+            }
+        )
+        return
+    }
+
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.weight(1f)) {
+                Text("Notes-X-krdrx", style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
+                Text("${store.notes.size} catatan", style = MaterialTheme.typography.labelSmall)
+            }
+            IconButton(onClick = { onStoreChange(store.copy(darkTheme = !store.darkTheme)) }) {
+                Icon(if (store.darkTheme) Icons.Default.WbSunny else Icons.Default.DarkMode,
+                    contentDescription = "Ganti tema")
+            }
+            IconButton(onClick = { grid = !grid; onStoreChange(store.copy(gridMode = grid)) }) {
+                Icon(if (grid) Icons.Default.ViewAgenda else Icons.Default.GridView,
+                    contentDescription = "Ganti tampilan")
+            }
+            IconButton(onClick = onLock) { Icon(Icons.Default.Lock, "Kunci") }
+        }
+        OutlinedTextField(search, { search = it }, modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("Cari judul, label, atau isi...") }, singleLine = true)
+        Spacer(Modifier.height(10.dp))
+        val sorted = store.notes.sortedWith(compareByDescending<NoteCard> { it.pinned }.thenByDescending { it.updated })
+            .filter { search.isBlank() || it.title.contains(search, true) || it.label.contains(search, true) ||
+                it.data.rows.any { row -> row.any { cell -> cell.contains(search, true) } } }
+        if (grid) {
+            androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+                columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(2),
+                modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(9.dp),
+                horizontalArrangement = Arrangement.spacedBy(9.dp)
+            ) {
+                items(sorted.size) { index ->
+                    NoteCardView(sorted[index], onOpen = { activeId = sorted[index].id },
+                        onPin = { note -> onStoreChange(store.copy(notes = store.notes.map { if (it.id == note.id) it.copy(pinned = !it.pinned) else it }.toMutableList())) },
+                        onMore = { showMeta = sorted[index] })
+                }
+            }
+        } else {
+            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                itemsIndexed(sorted) { _, note ->
+                    NoteCardView(note, onOpen = { activeId = note.id },
+                        onPin = { item -> onStoreChange(store.copy(notes = store.notes.map { if (it.id == item.id) it.copy(pinned = !it.pinned) else it }.toMutableList())) },
+                        onMore = { showMeta = note }, fullWidth = true)
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        ExtendedFloatingActionButton(
+            onClick = { creating = true },
+            modifier = Modifier.align(Alignment.End),
+            icon = { Icon(Icons.Default.NoteAdd, null) },
+            text = { Text("Buat Catatan") }
+        )
+    }
+
+    if (showMeta != null) {
+        val note = showMeta!!
+        var title by remember(note.id) { mutableStateOf(note.title) }
+        var label by remember(note.id) { mutableStateOf(note.label) }
+        var color by remember(note.id) { mutableIntStateOf(note.color) }
+        AlertDialog(
+            onDismissRequest = { showMeta = null },
+            title = { Text("Detail catatan") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(title, { title = it }, label = { Text("Judul") }, singleLine = true)
+                    OutlinedTextField(label, { label = it }, label = { Text("Label") }, singleLine = true)
+                    Text("Warna kartu")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(0, 1, 2, 3, 4).forEach { value ->
+                            val colors = listOf(Color(0xFF80CBC4), Color(0xFF90CAF9), Color(0xFFA5D6A7), Color(0xFFFFCC80), Color(0xFFCE93D8))
+                            Surface(
+                                modifier = Modifier.size(30.dp).clickable { color = value },
+                                color = colors[value], shape = RoundedCornerShape(50),
+                                border = if (color == value) BorderStroke(3.dp, MaterialTheme.colorScheme.primary) else null
+                            ) {}
+                        }
+                    }
+                    TextButton(onClick = {
+                        onStoreChange(store.copy(notes = store.notes.filterNot { it.id == note.id }.toMutableList()))
+                        showMeta = null
+                    }) { Text("Hapus catatan", color = MaterialTheme.colorScheme.error) }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onStoreChange(store.copy(notes = store.notes.map {
+                        if (it.id == note.id) it.copy(title = title.ifBlank { "Tanpa judul" }, label = label, color = color, updated = System.currentTimeMillis()) else it
+                    }.toMutableList()))
+                    showMeta = null
+                }) { Text("Simpan") }
+            },
+            dismissButton = { TextButton(onClick = { showMeta = null }) { Text("Batal") } }
+        )
+    }
+}
+
+@Composable
+private fun NoteCardView(
+    note: NoteCard,
+    onOpen: () -> Unit,
+    onPin: (NoteCard) -> Unit,
+    onMore: () -> Unit,
+    fullWidth: Boolean = false
+) {
+    val palette = listOf(Color(0xFFE0F2F1), Color(0xFFE3F2FD), Color(0xFFE8F5E9), Color(0xFFFFF3E0), Color(0xFFF3E5F5))
+    val darkPalette = listOf(Color(0xFF214A45), Color(0xFF243F59), Color(0xFF294A35), Color(0xFF55412A), Color(0xFF4A3454))
+    val background = if (MaterialTheme.colorScheme.background == DarkBg) darkPalette[note.color.coerceIn(0,4)] else palette[note.color.coerceIn(0,4)]
+    Surface(
+        color = background, shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth().clickable { onOpen() }
+    ) {
+        Column(Modifier.padding(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(note.title, Modifier.weight(1f), fontWeight = FontWeight.Bold,
+                    maxLines = 2, color = MaterialTheme.colorScheme.onBackground)
+                IconButton(onClick = { onPin(note) }, modifier = Modifier.size(30.dp)) {
+                    Icon(Icons.Default.PushPin, "Sematkan",
+                        tint = if (note.pinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                }
+                IconButton(onClick = onMore, modifier = Modifier.size(30.dp)) {
+                    Icon(Icons.Default.Settings, "Detail")
+                }
+            }
+            if (note.label.isNotBlank()) Text(note.label, style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary)
+            Text("${note.data.columns.size} kolom • ${note.data.rows.size} baris",
+                style = MaterialTheme.typography.labelSmall)
+            note.data.rows.take(3).forEach { row ->
+                Text(row.filter { it.isNotBlank() }.joinToString("  •  ").take(90),
+                    style = MaterialTheme.typography.bodySmall, maxLines = 1)
+            }
+        }
+    }
+}
+
+@Composable
+private fun NewNoteScreen(
+    onCancel: () -> Unit,
+    onCreate: (String, String, Int) -> Unit
+) {
+    var title by remember { mutableStateOf("") }
+    var label by remember { mutableStateOf("") }
+    var color by remember { mutableIntStateOf(0) }
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onCancel) { Icon(Icons.Default.ArrowBack, "Kembali") }
+            Text("Catatan baru", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        }
+        OutlinedTextField(title, { title = it }, modifier = Modifier.fillMaxWidth(),
+            label = { Text("Judul catatan") }, singleLine = true)
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(label, { label = it }, modifier = Modifier.fillMaxWidth(),
+            label = { Text("Label (opsional)") }, singleLine = true)
+        Spacer(Modifier.height(12.dp))
+        Text("Warna kartu")
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            listOf(Color(0xFF80CBC4), Color(0xFF90CAF9), Color(0xFFA5D6A7), Color(0xFFFFCC80), Color(0xFFCE93D8)).forEachIndexed { index, shade ->
+                Surface(modifier = Modifier.size(34.dp).clickable { color = index },
+                    color = shade, shape = RoundedCornerShape(50),
+                    border = if (color == index) BorderStroke(3.dp, MaterialTheme.colorScheme.primary) else null) {}
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+        Button(onClick = { onCreate(title.trim().ifBlank { "Tanpa judul" }, label.trim(), color) },
+            modifier = Modifier.fillMaxWidth()) { Text("Buat dan buka spreadsheet") }
+    }
+}
+
+@Composable
+private fun SpreadsheetScreen(
+    note: NoteCard,
+    onBack: () -> Unit,
+    onChange: (NoteCard) -> Unit
+) {
     var query by remember { mutableStateOf("") }
-    var showSettings by remember { mutableStateOf(false) }
     var edit by remember { mutableStateOf<Triple<Int, Int, String>?>(null) }
     var columnDialog by remember { mutableStateOf(false) }
     var newColumn by remember { mutableStateOf("") }
     var renameColumn by remember { mutableStateOf<Int?>(null) }
     var renamedTitle by remember { mutableStateOf("") }
+    val data = note.data
     val context = LocalContext.current
-
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(12.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Kembali") }
             Column(Modifier.weight(1f)) {
-                Text("Notes-X-krdrx", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onBackground)
-                Text("Vault lokal terenkripsi", style = MaterialTheme.typography.labelSmall)
+                Text(note.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                if (note.label.isNotBlank()) Text(note.label, style = MaterialTheme.typography.labelSmall)
             }
-            IconButton(onClick = { showSettings = true }) { Icon(Icons.Default.Settings, "Pengaturan") }
-            IconButton(onClick = onLock) { Icon(Icons.Default.Lock, "Kunci") }
+            IconButton(onClick = { columnDialog = true }) { Icon(Icons.Default.Add, "Tambah kolom") }
         }
         OutlinedTextField(query, { query = it }, modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("Cari data...") }, leadingIcon = { Icon(Icons.Default.Search, null) }, singleLine = true)
-        Spacer(Modifier.height(10.dp))
+            placeholder = { Text("Cari data...") }, singleLine = true)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { columnDialog = true }) { Icon(Icons.Default.Add, null); Text("Kolom") }
+            Button(onClick = { columnDialog = true }) { Text("+ Kolom") }
             OutlinedButton(onClick = {
-                val newRow: MutableList<String> = MutableList(data.columns.size) { "" }
-                val updatedRows: MutableList<MutableList<String>> =
-                    data.rows.map { it.toMutableList() }.toMutableList().also { it.add(newRow) }
-                onSave(data.copy(rows = updatedRows))
-            }) {
-                Icon(Icons.Default.Add, null); Text("Baris")
-            }
+                val rows = data.rows.map { it.toMutableList() }.toMutableList()
+                rows.add(MutableList(data.columns.size) { "" })
+                onChange(note.copy(data = data.copy(rows = rows), updated = System.currentTimeMillis()))
+            }) { Text("+ Baris") }
         }
-        Spacer(Modifier.height(8.dp))
-        val cellWidth = 132.dp
-        val gridLine = MaterialTheme.colorScheme.outlineVariant
+        val width = 132.dp
+        val line = MaterialTheme.colorScheme.outlineVariant
         Row(Modifier.horizontalScroll(rememberScrollState())) {
             data.columns.forEachIndexed { col, title ->
-                Surface(
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    border = BorderStroke(0.7.dp, gridLine),
-                    modifier = Modifier.width(cellWidth).height(40.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 6.dp, end = 2.dp)) {
-                        TextButton(
-                            onClick = { renameColumn = col; renamedTitle = title },
-                            modifier = Modifier.weight(1f).fillMaxHeight(),
-                            contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp)
-                        ) {
-                            Text(title, fontWeight = FontWeight.SemiBold, maxLines = 1,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer)
+                Surface(color = MaterialTheme.colorScheme.primaryContainer, border = BorderStroke(0.7.dp, line),
+                    modifier = Modifier.width(width).height(40.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = { renameColumn = col; renamedTitle = title }, modifier = Modifier.weight(1f)) {
+                            Text(title, maxLines = 1, fontWeight = FontWeight.Bold)
                         }
-                        IconButton(
-                            onClick = {
-                                onSave(data.copy(
-                                    columns = data.columns.toMutableList().also { it.removeAt(col) },
-                                    rows = data.rows.map { it.toMutableList().also { row -> if (col < row.size) row.removeAt(col) } }.toMutableList()
-                                ))
-                            },
-                            modifier = Modifier.size(26.dp)
-                        ) { Icon(Icons.Default.Delete, "Hapus kolom", modifier = Modifier.size(14.dp)) }
+                        IconButton(onClick = {
+                            onChange(note.copy(data = data.copy(
+                                columns = data.columns.toMutableList().also { it.removeAt(col) },
+                                rows = data.rows.map { it.toMutableList().also { r -> if (col < r.size) r.removeAt(col) } }.toMutableList()
+                            ), updated = System.currentTimeMillis()))
+                        }, modifier = Modifier.size(26.dp)) { Icon(Icons.Default.Delete, null, modifier = Modifier.size(14.dp)) }
                     }
                 }
             }
-            Surface(
-                color = MaterialTheme.colorScheme.primaryContainer,
-                border = BorderStroke(0.7.dp, gridLine),
-                modifier = Modifier.width(38.dp).height(40.dp)
-            ) { Box(contentAlignment = Alignment.Center) { Text("#", color = MaterialTheme.colorScheme.onPrimaryContainer) } }
         }
         LazyColumn(Modifier.weight(1f)) {
-            itemsIndexed(data.rows.mapIndexed { index, row -> index to row }
-                .filter { (_, row) -> query.isBlank() || row.any { it.contains(query, true) } }) { _, indexedRow ->
-                val rowIndex = indexedRow.first
-                val row = indexedRow.second
+            itemsIndexed(data.rows.mapIndexed { i, row -> i to row }.filter { (_, row) ->
+                query.isBlank() || row.any { it.contains(query, true) }
+            }) { _, pair ->
+                val ri = pair.first
                 Row(Modifier.horizontalScroll(rememberScrollState())) {
-                    row.forEachIndexed { colIndex, value ->
-                        val isPassword = data.columns.getOrNull(colIndex)?.let {
-                            it.contains("password", true) || it.contains("sandi", true)
-                        } == true
-                        var reveal by remember(value, rowIndex, colIndex) { mutableStateOf(false) }
-                        Surface(
-                            color = MaterialTheme.colorScheme.surface,
-                            border = BorderStroke(0.7.dp, gridLine),
-                            modifier = Modifier.width(cellWidth).height(42.dp)
-                                .clickable { edit = Triple(rowIndex, colIndex, value) }
-                        ) {
-                            Row(
-                                Modifier.fillMaxSize().padding(start = 7.dp, end = 2.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    if (isPassword && !reveal && value.isNotEmpty()) "••••••••" else value,
-                                    modifier = Modifier.weight(1f),
-                                    maxLines = 1, style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                if (isPassword && value.isNotEmpty()) {
-                                    IconButton(onClick = { reveal = !reveal }, modifier = Modifier.size(26.dp)) {
-                                        Icon(
-                                            if (reveal) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                            contentDescription = if (reveal) "Sembunyikan" else "Lihat",
-                                            modifier = Modifier.size(15.dp)
-                                        )
-                                    }
+                    pair.second.forEachIndexed { ci, value ->
+                        val password = data.columns.getOrNull(ci)?.let { it.contains("password", true) || it.contains("sandi", true) } == true
+                        var reveal by remember(value, ri, ci) { mutableStateOf(false) }
+                        Surface(color = MaterialTheme.colorScheme.surface, border = BorderStroke(0.7.dp, line),
+                            modifier = Modifier.width(width).height(42.dp).clickable { edit = Triple(ri, ci, value) }) {
+                            Row(Modifier.fillMaxSize().padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(if (password && !reveal && value.isNotEmpty()) "••••••••" else value,
+                                    Modifier.weight(1f), maxLines = 1, style = MaterialTheme.typography.bodySmall)
+                                if (password && value.isNotEmpty()) IconButton(onClick = { reveal = !reveal }, modifier = Modifier.size(25.dp)) {
+                                    Icon(if (reveal) Icons.Default.VisibilityOff else Icons.Default.Visibility, null, modifier = Modifier.size(14.dp))
                                 }
                             }
                         }
                     }
-                    Surface(
-                        color = MaterialTheme.colorScheme.surface,
-                        border = BorderStroke(0.7.dp, gridLine),
-                        modifier = Modifier.width(38.dp).height(42.dp)
-                    ) {
-                        IconButton(
-                            onClick = { onSave(data.copy(rows = data.rows.toMutableList().also { it.removeAt(rowIndex) })) },
-                            modifier = Modifier.fillMaxSize()
-                        ) { Icon(Icons.Default.Delete, "Hapus baris", modifier = Modifier.size(16.dp)) }
+                    Surface(color = MaterialTheme.colorScheme.surface, border = BorderStroke(0.7.dp, line),
+                        modifier = Modifier.width(36.dp).height(42.dp)) {
+                        IconButton(onClick = {
+                            onChange(note.copy(data = data.copy(rows = data.rows.toMutableList().also { it.removeAt(ri) }),
+                                updated = System.currentTimeMillis()))
+                        }) { Icon(Icons.Default.Delete, "Hapus baris", modifier = Modifier.size(15.dp)) }
                     }
                 }
             }
         }
     }
-
     if (edit != null) {
         val e = edit!!
         var value by remember(e) { mutableStateOf(e.third) }
@@ -384,7 +606,8 @@ private fun VaultScreen(data: VaultData, dark: Boolean, onTheme: (Boolean) -> Un
             confirmButton = { TextButton(onClick = {
                 val rows = data.rows.map { it.toMutableList() }.toMutableList()
                 if (e.first in rows.indices && e.second in rows[e.first].indices) rows[e.first][e.second] = value
-                onSave(data.copy(rows = rows)); edit = null
+                onChange(note.copy(data = data.copy(rows = rows), updated = System.currentTimeMillis()))
+                edit = null
             }) { Text("Simpan") } },
             dismissButton = { TextButton(onClick = { edit = null }) { Text("Batal") } })
     }
@@ -394,9 +617,8 @@ private fun VaultScreen(data: VaultData, dark: Boolean, onTheme: (Boolean) -> Un
             text = { OutlinedTextField(renamedTitle, { renamedTitle = it }, label = { Text("Nama kolom") }) },
             confirmButton = { TextButton(onClick = {
                 if (renamedTitle.isNotBlank() && index in data.columns.indices) {
-                    val cols = data.columns.toMutableList()
-                    cols[index] = renamedTitle.trim()
-                    onSave(data.copy(columns = cols))
+                    val columns = data.columns.toMutableList(); columns[index] = renamedTitle.trim()
+                    onChange(note.copy(data = data.copy(columns = columns), updated = System.currentTimeMillis()))
                 }
                 renameColumn = null
             }) { Text("Simpan") } },
@@ -407,19 +629,14 @@ private fun VaultScreen(data: VaultData, dark: Boolean, onTheme: (Boolean) -> Un
             text = { OutlinedTextField(newColumn, { newColumn = it }, label = { Text("Nama kolom") }) },
             confirmButton = { TextButton(onClick = {
                 if (newColumn.isNotBlank()) {
-                    onSave(data.copy(columns = (data.columns + newColumn.trim()).toMutableList(),
-                        rows = data.rows.map { (it + "").toMutableList() }.toMutableList()))
+                    onChange(note.copy(data = data.copy(
+                        columns = (data.columns + newColumn.trim()).toMutableList(),
+                        rows = data.rows.map { (it + "").toMutableList() }.toMutableList()
+                    ), updated = System.currentTimeMillis()))
                     newColumn = ""
                 }
                 columnDialog = false
             }) { Text("Tambah") } },
             dismissButton = { TextButton(onClick = { columnDialog = false }) { Text("Batal") } })
-    }
-    if (showSettings) {
-        AlertDialog(onDismissRequest = { showSettings = false }, title = { Text("Pengaturan") },
-            text = { Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Tema gelap", Modifier.weight(1f)); Switch(dark, onTheme)
-            } },
-            confirmButton = { TextButton(onClick = { showSettings = false }) { Text("Tutup") } })
     }
 }
