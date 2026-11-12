@@ -262,8 +262,9 @@ private fun NotesXApp() {
                     }
                 },
                 onLock = {
-                unlocked = false
-                pin = ""
+                    unlocked = false
+                    pin = ""
+                }
             )
             BackHandler { unlocked = false; pin = "" }
         }
