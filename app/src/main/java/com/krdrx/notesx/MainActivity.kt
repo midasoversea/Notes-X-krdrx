@@ -5,10 +5,13 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.os.Bundle
 import android.view.WindowManager
+import android.net.Uri
 import android.util.AtomicFile
 import java.io.FileOutputStream
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -141,6 +144,30 @@ private class VaultCrypto(private val context: Context) {
     @Volatile private var cachedKey: SecretKeySpec? = null
     @Volatile private var cachedSalt: ByteArray? = null
     fun exists() = file.exists() || File(file.path + ".bak").exists() || File(file.path + ".new").exists()
+    fun exportBytes(): ByteArray = atomicFile.readFully()
+
+    @Synchronized fun restoreBackup(bytes: ByteArray, pin: String): VaultStore {
+        require(bytes.size > 29 && bytes[0].toInt() == 1) { "Format cadangan tidak valid." }
+        val salt = bytes.copyOfRange(1, 17)
+        val iv = bytes.copyOfRange(17, 29)
+        val encrypted = bytes.copyOfRange(29, bytes.size)
+        val secretKey = key(pin, salt)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(128, iv))
+        val restored = VaultStore.parse(String(cipher.doFinal(encrypted), Charsets.UTF_8))
+        val output = atomicFile.startWrite()
+        try {
+            output.write(bytes)
+            atomicFile.finishWrite(output)
+        } catch (e: Exception) {
+            atomicFile.failWrite(output)
+            throw e
+        }
+        cachedPin = pin
+        cachedSalt = salt
+        cachedKey = secretKey
+        return restored
+    }
 
     private fun key(pin: String, salt: ByteArray): SecretKeySpec {
         val spec = PBEKeySpec(pin.toCharArray(), salt, 600_000, 256)
@@ -227,6 +254,25 @@ private fun NotesXApp() {
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val saveMutex = remember { Mutex() }
+    var selectedBackup by remember { mutableStateOf<Uri?>(null) }
+    val exportBackup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+        if (uri != null) scope.launch {
+            try {
+                val bytes = saveMutex.withLock { withContext(Dispatchers.IO) { crypto.exportBytes() } }
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri, "w")?.use { it.write(bytes) }
+                        ?: error("Lokasi cadangan tidak dapat dibuka.")
+                }
+                error = "Cadangan terenkripsi berhasil disimpan."
+            } catch (e: Exception) {
+                error = "Ekspor gagal: ${e.message ?: "galat penyimpanan"}"
+            }
+        }
+    }
+    val importBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        selectedBackup = uri
+        if (uri != null) error = "Berkas dipilih. Masukkan kata sandi vault lama, lalu tekan Pulihkan."
+    }
 
     val bg = if (dark) DarkBg else LightBg
     val surface = if (dark) Color(0xFF193B36) else Color.White
@@ -245,7 +291,38 @@ private fun NotesXApp() {
 
     MaterialTheme(colorScheme = scheme) {
         if (!unlocked) {
-            LockScreen(isSetup, pin, { pin = it }, pinConfirm, { pinConfirm = it }, error, dark, busy) {
+            LockScreen(
+                setup = isSetup, pin = pin, onPin = { pin = it },
+                confirm = pinConfirm, onConfirm = { pinConfirm = it },
+                error = error, dark = dark, busy = busy,
+                onChooseBackup = { importBackup.launch(arrayOf("*/*")) },
+                onRestoreBackup = {
+                    val uri = selectedBackup
+                    if (uri == null) error = "Pilih berkas cadangan terlebih dahulu."
+                    else if (pin.isBlank()) error = "Masukkan kata sandi vault lama."
+                    else {
+                        busy = true
+                        scope.launch {
+                            try {
+                                val restored = withContext(Dispatchers.IO) {
+                                    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                                        ?: error("Berkas tidak dapat dibaca.")
+                                    crypto.restoreBackup(bytes, pin)
+                                }
+                                data = restored
+                                dark = restored.darkTheme
+                                isSetup = false
+                                selectedBackup = null
+                                pinConfirm = ""
+                                error = ""
+                                unlocked = true
+                            } catch (_: Exception) {
+                                error = "Pemulihan gagal. Kata sandi salah atau berkas cadangan rusak."
+                            } finally { busy = false }
+                        }
+                    }
+                }
+            ) {
                 if (!busy) {
                     if (isSetup && (pin.length < 10 || pin != pinConfirm)) {
                         error = "Kata sandi minimal 10 karakter dan konfirmasi harus sama."
@@ -306,7 +383,8 @@ private fun NotesXApp() {
                     pinConfirm = ""
                     data = VaultStore.empty()
                     crypto.clearKey()
-                }
+                },
+                onExportBackup = { exportBackup.launch("Notes-X-krdrx-backup.vault") }
             )
         }
     }
@@ -322,7 +400,7 @@ private fun windowSecure(context: Context, enabled: Boolean) {
 private fun LockScreen(
     setup: Boolean, pin: String, onPin: (String) -> Unit,
     confirm: String, onConfirm: (String) -> Unit, error: String, dark: Boolean,
-    busy: Boolean, submit: () -> Unit
+    busy: Boolean, onChooseBackup: () -> Unit, onRestoreBackup: () -> Unit, submit: () -> Unit
 ) {
     Column(Modifier.fillMaxSize().background(if (dark) DarkBg else LightBg).padding(28.dp),
         verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
@@ -348,6 +426,12 @@ private fun LockScreen(
         Button(onClick = submit, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
             Text(if (busy) "Memproses..." else if (setup) "Buat Vault" else "Buka")
         }
+        if (setup) {
+            TextButton(onClick = onChooseBackup, enabled = !busy) { Text("Pilih cadangan untuk dipulihkan") }
+            if (error.startsWith("Berkas dipilih")) {
+                TextButton(onClick = onRestoreBackup, enabled = !busy) { Text("Pulihkan cadangan") }
+            }
+        }
     }
 }
 
@@ -355,7 +439,8 @@ private fun LockScreen(
 private fun VaultHomeScreen(
     store: VaultStore,
     onStoreChange: (VaultStore) -> Unit,
-    onLock: () -> Unit
+    onLock: () -> Unit,
+    onExportBackup: () -> Unit
 ) {
     var activeId by remember { mutableStateOf<String?>(null) }
     var creating by remember { mutableStateOf(false) }
@@ -478,6 +563,10 @@ private fun VaultHomeScreen(
                         onMore = { showMeta = note }, fullWidth = true)
                 }
             }
+        }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(onClick = onExportBackup, modifier = Modifier.fillMaxWidth()) {
+            Text("Ekspor cadangan terenkripsi")
         }
         Spacer(Modifier.height(8.dp))
         ExtendedFloatingActionButton(
