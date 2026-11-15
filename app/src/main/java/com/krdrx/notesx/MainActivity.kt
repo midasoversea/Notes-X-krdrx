@@ -306,7 +306,7 @@ private fun NotesXApp() {
                             try {
                                 val restored = withContext(Dispatchers.IO) {
                                     val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                                        ?: error("Berkas tidak dapat dibaca.")
+                                        ?: throw IllegalStateException("Berkas tidak dapat dibaca.")
                                     crypto.restoreBackup(bytes, pin)
                                 }
                                 data = restored
