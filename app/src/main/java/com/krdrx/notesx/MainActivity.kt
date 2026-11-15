@@ -5,6 +5,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.os.Bundle
 import android.view.WindowManager
+import android.util.AtomicFile
+import java.io.FileOutputStream
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
@@ -134,10 +136,11 @@ private data class VaultStore(
 
 private class VaultCrypto(private val context: Context) {
     private val file = File(context.filesDir, "vault.enc")
+    private val atomicFile = AtomicFile(file)
     @Volatile private var cachedPin: String? = null
     @Volatile private var cachedKey: SecretKeySpec? = null
     @Volatile private var cachedSalt: ByteArray? = null
-    fun exists() = file.exists()
+    fun exists() = file.exists() || File(file.path + ".bak").exists() || File(file.path + ".new").exists()
 
     private fun key(pin: String, salt: ByteArray): SecretKeySpec {
         val spec = PBEKeySpec(pin.toCharArray(), salt, 600_000, 256)
@@ -171,11 +174,13 @@ private class VaultCrypto(private val context: Context) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, secretKey, GCMParameterSpec(128, iv))
         val encrypted = cipher.doFinal(data.json().toByteArray(Charsets.UTF_8))
-        val temp = File(context.filesDir, "vault.enc.tmp")
-        temp.writeBytes(byteArrayOf(1) + salt + iv + encrypted)
-        if (!temp.renameTo(file)) {
-            file.writeBytes(temp.readBytes())
-            temp.delete()
+        val output = atomicFile.startWrite()
+        try {
+            output.write(byteArrayOf(1) + salt + iv + encrypted)
+            atomicFile.finishWrite(output)
+        } catch (e: Exception) {
+            atomicFile.failWrite(output)
+            throw e
         }
     }
 
@@ -254,6 +259,7 @@ private fun NotesXApp() {
                             try {
                                 val loaded = withContext(Dispatchers.IO) {
                                     if (isSetup) {
+                                        check(!crypto.exists()) { "Vault sudah ada. Setup dibatalkan untuk melindungi data." }
                                         val fresh = VaultStore.empty()
                                         crypto.save(password, fresh)
                                         fresh
@@ -263,6 +269,8 @@ private fun NotesXApp() {
                                 }
                                 data = loaded
                                 dark = loaded.darkTheme
+                                isSetup = false
+                                pinConfirm = ""
                                 unlocked = true
                             } catch (_: Exception) {
                                 error = if (isSetup) "Gagal membuat vault. Coba lagi." else "Kata sandi salah atau data vault rusak."
@@ -295,6 +303,8 @@ private fun NotesXApp() {
                 onLock = {
                     unlocked = false
                     pin = ""
+                    pinConfirm = ""
+                    data = VaultStore.empty()
                     crypto.clearKey()
                 }
             )
@@ -551,7 +561,13 @@ private fun NoteCardView(
             if (note.label.isNotBlank()) Text(note.label, style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary)
             note.data.rows.take(3).forEach { row ->
-                Text(row.filter { it.isNotBlank() }.joinToString("  •  ").take(90),
+                val preview = row.mapIndexedNotNull { index, value ->
+                    val name = note.data.columns.getOrNull(index).orEmpty()
+                    if (name.contains("password", true) || name.contains("sandi", true) ||
+                        name.equals("pin", true) || name.contains("kode", true)) null
+                    else value.takeIf { it.isNotBlank() }
+                }
+                Text(preview.joinToString("  •  ").take(90),
                     style = MaterialTheme.typography.bodySmall, maxLines = 1)
             }
         }
